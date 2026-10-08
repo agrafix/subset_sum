@@ -19,7 +19,6 @@ rayon = {version = "1.11"}
 wasm-bindgen = {version = "0.2.115", optional = true}
 field_accessor = "0.5"
 bitvec = "1"
-dashmap = "5.5.3"
 csv = "1.4.0"
 serde = { version = "1.0.228", features = ["derive"] }
 clap = { version = "4.5.31", features = ["derive"] }
@@ -37,3 +36,7 @@ crate-type = ["cdylib", "rlib"]
 [profile.release]
 lto = true
 codegen-units = 1
+
+[[bench]]
+name = "subset_sum"
+harness = false

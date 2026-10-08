@@ -61,9 +61,9 @@ pub mod dp {
 
     #[derive(Clone, Debug)]
     struct DpTable {
-        dp: Arc<DashSet<usize>>,
-        length: usize,
-        max_value: usize,
+        // Row i contains the distinct, sorted sums reachable with arr[..i].
+        // Retain every row so backtracking can recover every matching subset.
+        rows: Vec<Vec<u64>>,
     }
 
     pub fn sequence_matcher_formatter(result: Vec<AnswerElement>) -> String {
@@ -230,14 +230,13 @@ pub mod dp {
     }
 
     fn rec(
-        dp: &Arc<DashSet<usize>>,
+        rows: &[Vec<u64>],
         arr: &Vec<u64>,
         i: usize,
         j: usize,
         route: &mut Vec<u64>,
         answer: &mut Vec<Vec<u64>>,
         max_length: usize,
-        collen: usize,
     ) {
         // This code is mostly copied from https://drken1215.hatenablog.com/entry/2019/12/17/190300
         // We follow the dp table backward to find combinations of subsets.
@@ -256,21 +255,19 @@ pub mod dp {
             return;
         }
         let i_minus_one = i - 1;
-        let one_step_up = i_minus_one * collen + j;
         let v = { *arr.get(i_minus_one).unwrap() };
 
-        // println!("one_step_up dp {:?}", dp);
-        if dp.contains(&one_step_up) {
-            rec(dp, arr, i_minus_one, j, route, answer, max_length, collen);
+        if rows[i_minus_one].binary_search(&(j as u64)).is_ok() {
+            rec(rows, arr, i_minus_one, j, route, answer, max_length);
         }
 
-        let j_v: usize = match j.checked_sub(v as usize) {
-            Some(x) => x,
+        let j_v: usize = match (j as u64).checked_sub(v) {
+            Some(x) => x as usize,
             None => return,
         };
-        if dp.contains(&(one_step_up - v as usize)) {
+        if rows[i_minus_one].binary_search(&(j_v as u64)).is_ok() {
             route.push(v);
-            rec(dp, arr, i_minus_one, j_v, route, answer, max_length, collen);
+            rec(rows, arr, i_minus_one, j_v, route, answer, max_length);
             route.pop();
         }
     }
@@ -305,141 +302,90 @@ pub mod dp {
         vec
     }
 
-    use dashmap::DashSet;
-
-    fn add_indexed_recursive(
-        arr: &Vec<u64>,
-        dp: &Arc<DashSet<usize>>,
-        addr: usize,
-        collen: usize,
-        depth: usize,
-        length: usize,
-    ) {
-        if depth == arr.len() || addr > length {
-            return;
-        }
-
-        let stepsize = arr[depth] as usize;
-        let new_addr = addr + collen;
-        let new_addr_step = new_addr + stepsize;
-
-        let mut new_tasks = vec![];
-
-        if dp.insert(new_addr) {
-            new_tasks.push((new_addr, depth + 1));
-        }
-
-        if dp.insert(new_addr_step) {
-            new_tasks.push((new_addr_step, depth + 1));
-        }
-
-        if depth < 4 {
-            // Parallel execution
-            new_tasks
-                .into_par_iter()
-                .for_each(|(next_addr, next_depth)| {
-                    add_indexed_recursive(arr, dp, next_addr, collen, next_depth, length);
-                });
-        } else {
-            // Sequential execution
-            for (next_addr, next_depth) in new_tasks {
-                add_indexed_recursive(arr, dp, next_addr, collen, next_depth, length);
+    fn _make_dp_table(arr: &[u64], value: usize) -> DpTable {
+        let limit = value as u64;
+        let mut rows = Vec::with_capacity(arr.len() + 1);
+        rows.push(vec![0]);
+        for &weight in arr {
+            let previous = rows.last().unwrap();
+            if weight == 0 || weight > limit {
+                rows.push(previous.clone());
+                continue;
             }
+            // Merge the row with its translated copy. Truncating before the
+            // addition both discards unusable sums and prevents overflow.
+            let shifted_len = previous.partition_point(|&sum| sum <= limit - weight);
+            let mut row = Vec::with_capacity(previous.len() + shifted_len);
+            let (mut i, mut j) = (0, 0);
+            while i < previous.len() || j < shifted_len {
+                let plain = previous.get(i).copied();
+                let shifted = if j < shifted_len {
+                    Some(previous[j] + weight)
+                } else {
+                    None
+                };
+                let sum = match (plain, shifted) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (Some(a), None) => a,
+                    (None, Some(b)) => b,
+                    (None, None) => unreachable!(),
+                };
+                if plain == Some(sum) {
+                    i += 1;
+                }
+                if shifted == Some(sum) {
+                    j += 1;
+                }
+                row.push(sum);
+            }
+            rows.push(row);
         }
+        DpTable { rows }
     }
 
-    fn _make_dp_table(arr: &Vec<u64>, value: usize) -> DpTable {
-        // This function is used to create a dp table.
-        // The dp table is a table that stores the information of subset sum.
-        // However, dp table is sparse, so we use a hash set to store the information to reduce memory usase.
-        // dp only stores the indexes of the dp table that contains true value.
-        // To reduce computation time, we don't use nested loop, but recursive function.
-
-        let collen = value + 1;
-        let dp = Arc::new(DashSet::new());
-        dp.insert(0);
-
-        // let mut current_address = 0;
-        // println!("start add_indexed_recursive");
-        let length = (value + 1) * (arr.len() + 1);
-        add_indexed_recursive(arr, &dp, 0, collen, 0, length);
-        // println!("finish add_indexed_recursive");
-        DpTable {
-            dp,
-            length,
-            max_value: value,
-        }
+    #[test]
+    fn sparse_rows_keep_large_sums_separate_from_row_indices() {
+        let limit = usize::MAX as u64;
+        let table = _make_dp_table(&[limit, 1, 0], usize::MAX);
+        assert_eq!(
+            table.rows,
+            vec![
+                vec![0],
+                vec![0, limit],
+                vec![0, 1, limit],
+                vec![0, 1, limit]
+            ]
+        );
+        assert_eq!(_make_dp_table(&[0, 1, 2], 0).rows, vec![vec![0]; 4]);
+        assert_eq!(
+            _make_dp_table(&[20, 2, 2], 4).rows,
+            vec![vec![0], vec![0], vec![0, 2], vec![0, 2, 4]]
+        );
     }
 
-    // fn _make_dp_table(arr: &Vec<u64>, value: usize) -> DpTable {
-    //     let collen = value + 1;
-    //     let mut dp  = BTreeSet::new();
-    //     // let mut dp = BitVec::repeat(false, (value + 1) * (arr.len() + 1));
-    //     // dp.set(0, true);
-    //     // dp.reserve(value + 1);
-    //     dp.insert(0);
-    //     let mut current_address = 0;
-    //     let mut address_onestep_down = 0;
-    //     let mut arridx = 0;
-    //     arr.iter().for_each(|v_u32| {
-    //         let threshold = collen * arridx + (arr.iter().take(arridx + 1).sum::<u64>() + 1) as usize;
-    //         let v_usize = *v_u32 as usize;
-    //         for _j in 0..value + 1 {
-    //             let index = dp.iter().position(|&x| x == current_address).unwrap();
-
-    //             if dp.contains(&current_address) {
-    //                 address_onestep_down = current_address + collen;
-    //                 dp.insert(address_onestep_down);
-    //                 dp.insert(address_onestep_down + v_usize);
-    //                 current_address += 1;
-    //             } else {
-    //                 if current_address == threshold {
-    //                     // After the threshold, all values are false.
-    //                     current_address = collen * (arridx + 1);
-    //                     break
-    //                 } else {
-    //                     current_address += 1;
-    //                     continue;
-    //                 }
-    //             }
-    //         }
-    //         arridx += 1;
-    //     });
-    //     DpTable {
-    //         dp,
-    //         length: (value + 1) * (arr.len() + 1) as usize,
-    //         max_value: value,
-    //     }
-    // }
     fn _find_subsetsfast_only_positive(
         arr: &Vec<u64>,
         value: usize,
         max_length: usize,
         dptable: &DpTable,
     ) -> Vec<Vec<u64>> {
-        // dp is a table that stores the information of subset sum.
-        // dp[i][j] is the number of ways to make sum j with i element.
-        // We follow from the start of this table.
-        // let mut dp: Vec<Vec<i64>> = vec![vec![0; value + 1]; arr.len() + 1];
-        let answer_exist: bool = dptable
-            .dp
-            .contains(&(dptable.length - 1 - (dptable.max_value - value)));
+        let answer_exist = dptable.rows[arr.len()]
+            .binary_search(&(value as u64))
+            .is_ok();
         if !answer_exist {
             return vec![];
         }
-        let collen = dptable.max_value + 1;
         let a_length: usize = arr.len();
         let mut route: Vec<u64> = vec![];
         let mut answer: Vec<Vec<u64>> = vec![];
         rec(
-            &dptable.dp,
+            &dptable.rows,
             arr,
             a_length,
             value,
             &mut route,
             &mut answer,
             max_length,
-            collen,
         );
         answer
     }
@@ -629,38 +575,26 @@ pub mod dp {
         }
 
         let add: bool = match (use_all_keys, use_all_targets) {
-            (true, true) => {
-                
-                match (keys.is_empty(), targets.is_empty()) {
-                    (true, true) => true,
-                    _ => false,
-                }
-            }
-            (true, false) => {
-                
-                match (keys.is_empty(), targets.is_empty()) {
-                    (true, true) => true,
-                    (true, false) => true,
-                    _ => false,
-                }
-            }
-            (false, true) => {
-                
-                match (keys.is_empty(), targets.is_empty()) {
-                    (true, true) => true,
-                    (false, true) => true,
-                    _ => false,
-                }
-            }
-            (false, false) => {
-                
-                match (keys.is_empty(), targets.is_empty()) {
-                    (true, true) => true,
-                    (false, true) => true,
-                    (true, false) => true,
-                    _ => false,
-                }
-            }
+            (true, true) => match (keys.is_empty(), targets.is_empty()) {
+                (true, true) => true,
+                _ => false,
+            },
+            (true, false) => match (keys.is_empty(), targets.is_empty()) {
+                (true, true) => true,
+                (true, false) => true,
+                _ => false,
+            },
+            (false, true) => match (keys.is_empty(), targets.is_empty()) {
+                (true, true) => true,
+                (false, true) => true,
+                _ => false,
+            },
+            (false, false) => match (keys.is_empty(), targets.is_empty()) {
+                (true, true) => true,
+                (false, true) => true,
+                (true, false) => true,
+                _ => false,
+            },
         };
 
         if add {
@@ -869,7 +803,6 @@ pub mod dp {
             };
             answer.write().unwrap().push(elem.clone());
         }
-        
     }
 
     #[test]
